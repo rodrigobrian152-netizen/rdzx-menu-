@@ -36,6 +36,9 @@ public class MenuView extends LinearLayout {
         setBackground(bg);
         setPadding(4, 4, 4, 10);
 
+        body = new LinearLayout(c);
+        body.setOrientation(VERTICAL);
+
         LinearLayout bar = new LinearLayout(c);
         bar.setOrientation(HORIZONTAL);
         bar.setPadding(18, 12, 12, 12);
@@ -54,16 +57,8 @@ public class MenuView extends LinearLayout {
         caret.setPadding(16, 0, 8, 0);
         bar.addView(caret);
 
-        bar.setOnClickListener(v -> {
-            open = !open;
-            body.setVisibility(open ? VISIBLE : GONE);
-            caret.setText(open ? "v" : ">");
-        });
         bar.setOnTouchListener(new Drag());
         addView(bar);
-
-        body = new LinearLayout(c);
-        body.setOrientation(VERTICAL);
         addView(body);
 
         build();
@@ -104,7 +99,8 @@ public class MenuView extends LinearLayout {
                 row.addView(lab);
 
                 SeekBar sb = new SeekBar(getContext());
-                int lo = Zdrx.featLo(id), hi = Zdrx.featHi(id);
+                int lo = Zdrx.featLo(id);
+                int hi = Zdrx.featHi(id);
                 sb.setMax(Math.max(1, hi - lo));
                 sb.setProgress(Zdrx.featDef(id) - lo);
                 sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -134,13 +130,23 @@ public class MenuView extends LinearLayout {
             FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) getLayoutParams();
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    downX = e.getRawX(); downY = e.getRawY();
-                    startLeft = lp.leftMargin; startTop = lp.topMargin;
+                    downX = e.getRawX();
+                    downY = e.getRawY();
+                    startLeft = lp.leftMargin;
+                    startTop = lp.topMargin;
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     lp.leftMargin = startLeft + (int) (e.getRawX() - downX);
                     lp.topMargin  = startTop  + (int) (e.getRawY() - downY);
                     setLayoutParams(lp);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                    if (Math.abs(e.getRawX() - downX) < 12
+                            && Math.abs(e.getRawY() - downY) < 12) {
+                        open = !open;
+                        body.setVisibility(open ? VISIBLE : GONE);
+                        caret.setText(open ? "v" : ">");
+                    }
                     return true;
                 default:
                     return false;
