@@ -12,18 +12,18 @@ public final class Prefs {
         sp = c.getApplicationContext().getSharedPreferences(STORE, Context.MODE_PRIVATE);
     }
 
-    public static String str(String k, String def) {
+    public static String get(String k, String def) {
         return sp == null ? def : sp.getString(k, def);
     }
 
-    public static void str(String k, String v) {
+    public static void put(String k, String v) {
         if (sp != null) sp.edit().putString(k, v).apply();
     }
 
-    public static void saveCfg() { str("cfg", Zdrx.cfgJson()); }
+    public static void saveCfg() { put("cfg", Zdrx.cfgJson()); }
 
     public static void loadCfg() {
-        String j = str("cfg", null);
+        String j = get("cfg", null);
         if (j != null && j.length() > 2) Zdrx.setJson(j);
     }
 
