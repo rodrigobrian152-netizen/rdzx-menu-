@@ -5,9 +5,13 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+env:
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
 jobs:
   apk:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
@@ -17,17 +21,25 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: gradle/actions/setup-gradle@v3
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
-      - uses: android-actions/setup-android@v3
+      - name: Verificar estrutura
+        run: |
+          test -f settings.gradle || { echo "::error::settings.gradle ausente na raiz"; exit 1; }
+          test -f app/build.gradle || { echo "::error::app/build.gradle ausente - refaca o upload da pasta app"; exit 1; }
+          test -f app/src/main/cpp/CMakeLists.txt || { echo "::error::app/src/main/cpp ausente - refaca o upload da pasta cpp"; exit 1; }
+          test -f app/src/main/java/io/zdrx/client/Zdrx.java || { echo "::error::pasta java ausente"; exit 1; }
 
       - name: Instalar SDK, NDK e CMake
         run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" \
-                     "ndk;26.1.10909125" "cmake;3.22.1"
+          SDKM=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -n1)
+          if [ -z "$SDKM" ]; then echo "::error::sdkmanager nao encontrado"; exit 1; fi
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0" \
+                  "ndk;26.1.10909125" "cmake;3.22.1"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       - name: Compilar APK
         run: gradle :app:assembleDebug --no-daemon --stacktrace
