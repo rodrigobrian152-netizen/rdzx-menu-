@@ -4,9 +4,16 @@ project(zdrx CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_library(zdrx SHARED core.cpp net.cpp esp.cpp aim.cpp bridge.cpp)
+add_executable(zdrx
+        entry.cpp
+        mem.cpp
+        core.cpp
+        net.cpp
+        esp.cpp
+        aim.cpp
+        calibrar.cpp
+        offsets.cpp)
 
-target_compile_options(zdrx PRIVATE -O2 -fvisibility=hidden -Wall -Wextra -ffast-math)
-
-find_library(log-lib log)
-target_link_libraries(zdrx ${log-lib})
+target_compile_options(zdrx PRIVATE -O2 -fPIE -Wall -Wno-unused-variable)
+target_link_options(zdrx PRIVATE -pie)
+target_link_libraries(zdrx log)
