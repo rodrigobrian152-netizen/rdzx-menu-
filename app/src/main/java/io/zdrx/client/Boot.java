@@ -146,9 +146,8 @@ public class Boot extends Activity {
     private void launch() {
         Zdrx.boot(true);
         Prefs.loadCfg();
-        startService(new Intent(this, ZdrxVpn.class));
-        startService(new Intent(this, ZdrxOverlay.class));
-        say("motor ONLINE - VPN + overlay ativos");
+       ZdrxServico.iniciar(this);
+        say("motor ONLINE ");
     }
 
     @Override protected void onActivityResult(int req, int res, Intent d) {
