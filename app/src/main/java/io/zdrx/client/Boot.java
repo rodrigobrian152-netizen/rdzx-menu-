@@ -22,8 +22,6 @@ import android.widget.Toast;
 import java.util.ArrayList;
 import java.util.List;
 
-import io.zdrx.client.net.ZdrxVpn;
-import io.zdrx.client.overlay.ZdrxOverlay;
 
 public class Boot extends Activity {
 
