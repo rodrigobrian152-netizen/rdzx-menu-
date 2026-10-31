@@ -80,8 +80,7 @@ public class Boot extends Activity {
         stop.setText("PARAR");
         stop.setOnClickListener(v -> {
             Zdrx.boot(false);
-            stopService(new Intent(this, ZdrxVpn.class));
-            stopService(new Intent(this, ZdrxOverlay.class));
+           ZdrxServico.parar(this);
             say("parado");
         });
         r.addView(stop);
