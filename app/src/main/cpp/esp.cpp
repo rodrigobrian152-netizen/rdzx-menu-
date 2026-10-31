@@ -1,135 +1,92 @@
 #include "zdrx.h"
+#include "offsets.h"
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <cmath>
+#include <unistd.h>
 
-namespace zdrx {
+bool mem_mapeado(uintptr_t);
+ssize_t mem_ler(uintptr_t, void *, size_t);
 
-/* Registro de entidade (20 bytes):
-     +0 i32 id | +4 i32 x | +8 i32 y | +12 i32 z | +16 u16 vida | +18 u16 time */
+typedef struct {
+    int32_t  id;
+    float    x, y, z;
+    float    dx, dy, dz;
+    uint64_t t_visao;
+    uint64_t t_ini;
+} ent;
 
-static constexpr size_t  REC      = 20;
-static constexpr int64_t HOT      = 2500;
-static constexpr int64_t LERP_MAX = 200;
+static ent g_ent[128];
+static int g_n = 0;
 
-static inline uint32_t rd32(const uint8_t* p) {
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+static uint64_t agora_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
 }
-static inline uint16_t rd16(const uint8_t* p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 
-void ingest(const uint8_t* body, size_t len) {
-    size_t count = len / REC;
-    int64_t now = now_ms();
+/* anda a lista ate achar id 0 (a calibracao nao depende de contagem) */
+void esp_coletar(void) {
+    g_n = 0;
+    if (!off::LISTA_ENTIDADES) return;
+    uint64_t agora = agora_ms();
 
-    for (size_t i = 0; i < count; i++) {
-        const uint8_t* r = body + i * REC;
+    for (int i = 0; i < 100 && g_n < 128; i++) {
+        uintptr_t e = off::LISTA_ENTIDADES + (uintptr_t)i * off::PASSO_ENT;
+        int32_t id = 0;
+        float x = 0, y = 0, z = 0;
+        if (mem_ler(e + off::ENT_ID, &id, 4) != 4 || id <= 0) break;
+        if (mem_ler(e + off::ENT_X, &x, 4) != 4) break;
+        if (mem_ler(e + off::ENT_Y, &y, 4) != 4) break;
+        if (mem_ler(e + off::ENT_Z, &z, 4) != 4) break;
+        if (fabsf(x) < 1.0f && fabsf(y) < 1.0f) continue;
 
-        int32_t id = (int32_t)rd32(r);
-        if (id == 0) continue;
-
-        float x = (float)(int32_t)rd32(r + 4);
-        float y = (float)(int32_t)rd32(r + 8);
-        float z = (float)(int32_t)rd32(r + 12);
-        float hp = (float)rd16(r + 16) / 10.0f;
-        int32_t team = (int32_t)rd16(r + 18);
-
-        auto it = S.ents.find(id);
-        if (it == S.ents.end()) {
-            Ent e;
-            e.id = id;
-            e.dst = Vec3{x, y, z};
-            e.cur = e.dst;
-            e.t0 = 0;
-            e.t1 = now;
-            e.hp = hp;
-            e.team = team;
-            S.ents.emplace(id, e);
-            S.kept++;
-            continue;
-        }
-
-        Ent& e = it->second;
-        int64_t dt = now - e.t1;
-        if (dt > 0) {
-            float s = 1000.0f / (float)dt;
-            e.vel.x = (x - e.cur.x) * s;
-            e.vel.y = (y - e.cur.y) * s;
-            e.vel.z = (z - e.cur.z) * s;
-        }
-        e.cur = e.dst;
-        e.dst = Vec3{x, y, z};
-        e.t0 = e.t1;
-        e.t1 = now;
-        e.hp = hp;
-        e.team = team;
+        ent *slot = nullptr;
+        for (int k = 0; k < g_n; k++) if (g_ent[k].id == id) { slot = &g_ent[k]; break; }
+        if (!slot) { slot = &g_ent[g_n++]; memset(slot, 0, sizeof(*slot)); slot->id = id; slot->t_ini = agora; }
+        slot->dx = slot->x; slot->dy = slot->y; slot->dz = slot->z;
+        slot->x = x; slot->y = y; slot->z = z;
+        slot->t_visao = agora;
     }
 }
 
-void lock_from(const uint8_t* body, size_t len) {
-    size_t count = len / REC;
-    if (count <= 4) return;
+void esp_montar(zdrx_frame *f) {
+    memset(f, 0, sizeof(*f));
+    f->magic = ZDRX_MAGIC;
+    f->versao = 3;
 
-    int32_t id = (int32_t)rd32(body + 4 * REC);
-    if (id == 0) return;
-
-    if (S.lockId == 0) {
-        S.lockState = 1;
-        log("lock: candidato id=%d", id);
+    uintptr_t eu = off::JOGADOR_LOCAL;
+    if (eu) {
+        mem_ler(eu + off::CAMPO_POS + 0, &f->px, 4);
+        mem_ler(eu + off::CAMPO_POS + 4, &f->py, 4);
+        mem_ler(eu + off::CAMPO_POS + 8, &f->pz, 4);
+        mem_ler(eu + off::CAMPO_YAW, &f->yaw, 4);
+        mem_ler(eu + off::CAMPO_PITCH, &f->pitch, 4);
     }
-    S.lockId = id;
-    S.lockState = 2;
-    S.lockUntil = now_ms() + 55000;
-    S.errX = S.errY = 0;
-    log("lock: ALVO=%d travado", id);
-}
 
-/* buffer: [0..2] self | [3] yaw | [4] pitch | [5] n | [6] lockId | [7] estado
-           depois 6 floats por entidade: x,y,z (m), id, vida, time */
-int drain_into(float* o, int cap) {
-    std::lock_guard<std::recursive_mutex> lk(S.m);
-    if (!o || cap < 8) return 0;
+    uint64_t agora = agora_ms();
+    int saida = 0;
+    for (int i = 0; i < g_n && saida < ZDRX_MAX_ALVOS; i++) {
+        ent *e = &g_ent[i];
+        uint64_t idade = agora - e->t_visao;
+        if (idade >= ZDRX_IDADE_MS) continue;
 
-    o[0] = S.self.x / 1000.0f;
-    o[1] = S.self.y / 1000.0f;
-    o[2] = S.self.z / 1000.0f;
-    o[3] = S.yaw;
-    o[4] = S.pitch;
-
-    int n = 0;
-    int maxn = (cap - 8) / 6;
-    int64_t now = now_ms();
-
-    for (auto it = S.ents.begin(); it != S.ents.end(); ) {
-        Ent& e = it->second;
-
-        int64_t age = now - e.t1;
-        if (age >= HOT) { it = S.ents.erase(it); continue; }
-        if (n >= maxn) break;
-
-        float x = e.cur.x, y = e.cur.y, z = e.cur.z;
-        int64_t span = e.t1 - e.t0;
-
-        if (e.t0 && span > 0 && span < 500) {
-            int64_t t = age > LERP_MAX ? LERP_MAX : age;
-            float f = (float)t / (float)span;
-            x = e.cur.x + (e.dst.x - e.cur.x) * f;
-            y = e.cur.y + (e.dst.y - e.cur.y) * f;
-            z = e.cur.z + (e.dst.z - e.cur.z) * f;
+        float x = e->x, y = e->y, z = e->z;
+        uint64_t dur = e->t_visao - e->t_ini;
+        if (dur > 0 && dur < 500) {
+            float t = (float)idade / (float)dur;
+            float lim = (float)ZDRX_LERP_MS / 1000.0f;
+            if (t > lim) t = lim;
+            x = e->x + (e->x - e->dx) * t;
+            y = e->y + (e->y - e->dy) * t;
+            z = e->z + (e->z - e->dz) * t;
         }
-
-        float* q = o + 8 + n * 6;
-        q[0] = x / 1000.0f;
-        q[1] = y / 1000.0f;
-        q[2] = z / 1000.0f;
-        q[3] = (float)e.id;
-        q[4] = e.hp;
-        q[5] = (float)e.team;
-        n++;
-        ++it;
+        f->alvos[saida].x = x / 1000.0f;
+        f->alvos[saida].y = y / 1000.0f;
+        f->alvos[saida].z = z / 1000.0f;
+        f->alvos[saida].id = e->id;
+        saida++;
     }
-
-    o[5] = (float)n;
-    o[6] = (float)S.lockId;
-    o[7] = (float)S.lockState;
-    return n;
+    f->n = (uint16_t)saida;
 }
-
-} // namespace zdrx
