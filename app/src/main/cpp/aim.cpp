@@ -1,89 +1,60 @@
 #include "zdrx.h"
+#include "offsets.h"
 #include <cmath>
+#include <cstring>
 
-namespace zdrx {
+ssize_t mem_ler(uintptr_t, void *, size_t);
+template <typename T> bool escrever(uintptr_t, T);
 
-static constexpr float RAD2DEG = 57.2957795f;
+void aim_tick(void) {
+    if (!gate(F_AIM)) return;
+    uintptr_t eu = off::JOGADOR_LOCAL;
+    if (!eu || !off::LISTA_ENTIDADES) return;
 
-/* Solver PD: avanco proporcional ao erro, amortecido pela derivada,
-   com antecipacao pela velocidade estimada da entidade. */
+    float px = 0, py = 0, pz = 0, yaw = 0, pitch = 0;
+    if (mem_ler(eu + off::CAMPO_POS + 0, &px, 4) != 4) return;
+    mem_ler(eu + off::CAMPO_POS + 4, &py, 4);
+    mem_ler(eu + off::CAMPO_POS + 8, &pz, 4);
+    mem_ler(eu + off::CAMPO_YAW, &yaw, 4);
+    mem_ler(eu + off::CAMPO_PITCH, &pitch, 4);
 
-bool aim_solve(int32_t cx, int32_t cy, int32_t& ox, int32_t& oy) {
-    if (!S.lockId) return false;
+    float fov = (float)core_get(F_FOV);
+    float melhor = fov * fov;
+    float tx = 0, ty = 0, tz = 0;
+    bool achou = false;
 
-    int64_t now = now_ms();
-    if (S.lockUntil && now > S.lockUntil) return false;
+    for (int i = 0; i < 100; i++) {
+        uintptr_t e = off::LISTA_ENTIDADES + (uintptr_t)i * off::PASSO_ENT;
+        int32_t id = 0;
+        float x = 0, y = 0, z = 0;
+        if (mem_ler(e + off::ENT_ID, &id, 4) != 4 || id <= 0) break;
+        if (mem_ler(e + off::ENT_X, &x, 4) != 4) break;
+        if (mem_ler(e + off::ENT_Y, &y, 4) != 4) break;
+        if (mem_ler(e + off::ENT_Z, &z, 4) != 4) break;
 
-    auto it = S.ents.find(S.lockId);
-    if (it == S.ents.end()) return false;
-
-    const Ent& e = it->second;
-
-    float lead = val(F_AIM_LEAD) / 1000.0f;
-    float tx = e.dst.x + e.vel.x * lead;
-    float ty = e.dst.y + e.vel.y * lead;
-    float tz = e.dst.z + e.vel.z * lead;
-
-    float dx = tx - S.self.x;
-    float dy = ty - S.self.y;
-    float dz = tz - S.self.z;
-
-    float flat = std::sqrt(dx * dx + dy * dy);
-    float dist = std::sqrt(flat * flat + dz * dz);
-    if (dist < 1.0f) return false;
-
-    float yawT   = std::atan2(dy, dx) * RAD2DEG;
-    float pitchT = std::atan2(dz, flat) * RAD2DEG;
-
-    float yawErr = yawT - S.yaw;
-    while (yawErr >  180.0f) yawErr -= 360.0f;
-    while (yawErr < -180.0f) yawErr += 360.0f;
-    float pitchErr = pitchT - S.pitch;
-
-    float errMag = std::sqrt(yawErr * yawErr + pitchErr * pitchErr);
-
-    if (errMag * 1000.0f > (float)val(F_AIM_FOV) * 4.0f) return false;
-
-    float dead = val(F_AIM_DEAD) / 1000.0f;
-    if (errMag < dead) {
-        ox = (int32_t)(S.yaw * 1000.0f);
-        oy = (int32_t)(S.pitch * 1000.0f);
-        return true;
+        float dx = x - px, dy = y - py, dz = z - pz;
+        float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < melhor) { melhor = d2; tx = x; ty = y; tz = z; achou = true; }
     }
+    if (!achou) return;
 
-    float dt = (now - S.lastAim) / 1000.0f;
-    if (dt <= 0.0f || dt > 0.25f) dt = 1.0f / 60.0f;
-    S.lastAim = now;
+    float dx = tx - px, dy = ty - py, dz = tz - pz;
+    float alvo_yaw = atan2f(dy, dx) * 57.29578f;
+    float alvo_pitch = -atan2f(dz, sqrtf(dx * dx + dy * dy)) * 57.29578f;
 
-    float kp = val(F_AIM_GAIN) / 1000.0f;
-    float kd = val(F_AIM_DAMP) / 1000.0f;
+    float dyaw = alvo_yaw - yaw;
+    while (dyaw > 180.0f) dyaw -= 360.0f;
+    while (dyaw < -180.0f) dyaw += 360.0f;
+    float dpitch = alvo_pitch - pitch;
 
-    float dYaw = (yawErr - S.errX) / dt;
-    float dPit = (pitchErr - S.errY) / dt;
-    S.errX = yawErr;
-    S.errY = pitchErr;
+    float suave = (float)core_get(F_SMOOTH);
+    if (suave < 1.0f) suave = 1.0f;
+    float dist = sqrtf(dyaw * dyaw + dpitch * dpitch);
 
-    float uYaw = kp * yawErr + kd * dYaw;
-    float uPit = kp * pitchErr + kd * dPit;
+    float ny, np;
+    if (dist < 0.6f) { ny = alvo_yaw; np = alvo_pitch; }
+    else { ny = yaw + dyaw / suave; np = pitch + dpitch / suave; }
 
-    const float MAX_RATE = 6.0f;
-    if (uYaw >  MAX_RATE) uYaw =  MAX_RATE;
-    if (uYaw < -MAX_RATE) uYaw = -MAX_RATE;
-    if (uPit >  MAX_RATE) uPit =  MAX_RATE;
-    if (uPit < -MAX_RATE) uPit = -MAX_RATE;
-
-    float nYaw = S.yaw + uYaw * dt;
-    float nPit = S.pitch + uPit * dt;
-
-    ox = (int32_t)(nYaw * 1000.0f);
-    oy = (int32_t)(nPit * 1000.0f);
-
-    S.aimHits++;
-    return true;
+    escrever(eu + off::CAMPO_YAW, ny);
+    escrever(eu + off::CAMPO_PITCH, np);
 }
-
-bool firing() {
-    return S.lockState == 2 && S.aimHits > 0;
-}
-
-} // namespace zdrx
