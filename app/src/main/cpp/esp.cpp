@@ -4,6 +4,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cmath>
+#include <time.h>
 #include <unistd.h>
 
 bool mem_mapeado(uintptr_t);
