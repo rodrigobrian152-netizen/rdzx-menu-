@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include <sys/types.h>
 
 #define ZDRX_MAGIC        0x5A44
 #define ZDRX_PORTA        27015
@@ -39,3 +40,26 @@ void     core_init(void);
 int64_t  core_get(int id);
 void     core_set(int id, int64_t v);
 int      gate(int id);
+
+/* --- acesso a memoria do processo alvo (mem.cpp) --- */
+extern pid_t     g_pid;
+extern int       g_mem;
+extern uintptr_t g_base;
+extern uintptr_t g_fim;
+
+bool    mem_abrir(pid_t pid);
+bool    mem_base(const char *modulo);
+ssize_t mem_ler(uintptr_t addr, void *dst, size_t n);
+ssize_t mem_escrever(uintptr_t addr, const void *src, size_t n);
+bool    mem_mapeado(uintptr_t p);
+size_t  mem_regioes(uintptr_t *ini, uintptr_t *fim, size_t max);
+
+template <typename T>
+inline bool ler(uintptr_t addr, T *saida) {
+    return mem_ler(addr, saida, sizeof(T)) == (ssize_t)sizeof(T);
+}
+
+template <typename T>
+inline bool escrever(uintptr_t addr, T valor) {
+    return mem_escrever(addr, &valor, sizeof(T)) == (ssize_t)sizeof(T);
+}
