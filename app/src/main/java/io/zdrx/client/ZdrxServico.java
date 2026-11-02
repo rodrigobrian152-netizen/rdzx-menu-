@@ -10,14 +10,18 @@ import android.os.Build;
 import android.os.IBinder;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 
 /** Sobe a engine sozinha e acompanha o status, sem clique. */
 public class ZdrxServico extends Service {
 
     private static final int ID = 4242;
+    private static final long ESPERA_MIN = 1500L;
+    private static final long ESPERA_MAX = 30000L;
+
     private Process proc;
-    private volatile boolean vivo = true;
+    private volatile boolean rodando = true;
 
     public static void iniciar(Context ctx) {
         Intent i = new Intent(ctx, ZdrxServico.class);
@@ -58,36 +62,66 @@ public class ZdrxServico extends Service {
     }
 
     private void arrancar() {
-        try {
-            proc = new ProcessBuilder(Zdrx.caminho(this)).redirectErrorStream(true).start();
-        } catch (IOException e) {
+        String p = Zdrx.caminho(this);
+        if (!Zdrx.pronto(this)) {
             proc = null;
+            return;
+        }
+        try {
+            proc = new ProcessBuilder(p).redirectErrorStream(true).start();
+        } catch (IOException direto) {
+            try {
+                proc = new ProcessBuilder("/system/bin/linker64", p)
+                        .redirectErrorStream(true).start();
+            } catch (IOException viaLinker) {
+                proc = null;
+            }
         }
     }
 
     private void vigiar() {
         new Thread(() -> {
-            File f = new File("/data/local/tmp/zdrx.status");
-            while (vivo) {
+            File f = new File(Zdrx.STATUS);
+            long espera = ESPERA_MIN;
+            while (rodando) {
+                String txt = "aguardando jogo";
                 try {
-                    String txt = "aguardando jogo";
-                    if (f.exists()) {
-                        byte[] b = new byte[128];
-                        try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+                    if (f.exists() && f.canRead()) {
+                        byte[] b = new byte[160];
+                        try (FileInputStream in = new FileInputStream(f)) {
                             int n = in.read(b);
                             if (n > 0) txt = new String(b, 0, n, "UTF-8").trim();
                         }
+                        espera = ESPERA_MIN;
                     }
-                    atualizar(txt);
-                    if (proc != null && !vivo(proc)) arrancar();
-                } catch (Exception ignored) {}
-                try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                } catch (Exception ignored) {
+                }
+                atualizar(txt);
+
+                if (proc == null || !vivo(proc)) {
+                    arrancar();
+                    try {
+                        Thread.sleep(espera);
+                    } catch (InterruptedException ignored) {
+                    }
+                    espera = Math.min(espera * 2, ESPERA_MAX);
+                    continue;
+                }
+                try {
+                    Thread.sleep(ESPERA_MIN);
+                } catch (InterruptedException ignored) {
+                }
             }
         }).start();
     }
 
     private static boolean vivo(Process p) {
-        try { p.exitValue(); return false; } catch (IllegalThreadStateException e) { return true; }
+        try {
+            p.exitValue();
+            return false;
+        } catch (IllegalThreadStateException e) {
+            return true;
+        }
     }
 
     private void atualizar(String txt) {
@@ -96,15 +130,19 @@ public class ZdrxServico extends Service {
     }
 
     @Override
-    public int onStartCommand(Intent i, int flags, int id) { return START_STICKY; }
+    public int onStartCommand(Intent i, int flags, int id) {
+        return START_STICKY;
+    }
 
     @Override
     public void onDestroy() {
-        vivo = false;
+        rodando = false;
         if (proc != null) proc.destroy();
         super.onDestroy();
     }
 
     @Override
-    public IBinder onBind(Intent i) { return null; }
+    public IBinder onBind(Intent i) {
+        return null;
+    }
 }
