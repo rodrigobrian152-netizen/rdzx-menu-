@@ -1,182 +1,37 @@
 #include "zdrx.h"
-
-#include <android/log.h>
-#include <cstdarg>
-#include <cstdio>
 #include <cstring>
-#include <deque>
-#include <sstream>
 
-#define TAG "ZDRX"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
+static int64_t g_feat[ZDRX_FEAT_N];
 
-namespace zdrx {
-
-State S;
-
-const Feature FEATURES[F_COUNT] = {
-    {"esp",       "ESP",              T_BOOL,  1,   0,    1},
-    {"esp_box",   "Caixas",           T_BOOL,  1,   0,    1},
-    {"esp_name",  "Identificacao",    T_BOOL,  1,   0,    1},
-    {"esp_dist",  "Distancia",        T_BOOL,  1,   0,    1},
-    {"esp_line",  "Linhas",           T_BOOL,  0,   0,    1},
-    {"esp_hp",    "Barra de vida",    T_BOOL,  1,   0,    1},
-
-    {"aim",       "Aimbot",           T_BOOL,  0,   0,    1},
-    {"aim_fov",   "FOV",              T_RANGE, 120, 10,   900},
-    {"aim_gain",  "Ganho",            T_RANGE, 700, 50,   4000},
-    {"aim_damp",  "Amortecimento",    T_RANGE, 120, 0,    2000},
-    {"aim_lead",  "Antecipacao (ms)", T_RANGE, 90,  0,    400},
-    {"aim_dead",  "Zona morta",       T_RANGE, 6,   0,    60},
-
-    {"norecoil",  "Sem recuo",        T_BOOL,  0,   0,    1},
-    {"fastland",  "Queda rapida",     T_BOOL,  0,   0,    1},
-    {"ghost",     "Ghost",            T_BOOL,  0,   0,    1},
-    {"magic",     "Magic bullet",     T_BOOL,  0,   0,    1},
-    {"lockb",     "Trava de campos",  T_BOOL,  1,   0,    1},
-    {"cmdf",      "Comandos",         T_BOOL,  1,   0,    1},
-
-    {"capture",   "Captura",          T_BOOL,  0,   0,    1},
-    {"trace",     "Trace",            T_BOOL,  1,   0,    1}
+/* valores iniciais: gates dos blocos desligados, defaults neutros */
+static const zdrx_feat TABELA[] = {
+    { F_ESP, 0 }, { F_AIM, 0 }, { F_FOV, 120 }, { F_SMOOTH, 3 },
+    { F_WALL, 0 }, { F_SPEED, 0 }, { F_NORECOIL, 0 }, { F_FASTLAND, 0 },
+    { F_ANTENA, 0 }, { F_BONE, 0 }, { F_TRIGGER, 0 }, { F_SILENT, 0 },
+    { F_NOSPREAD, 0 }, { F_GHOST, 0 }, { F_JUMP, 0 }, { F_NOFALL, 0 },
+    { F_RADAR, 1 }, { F_MAGIC, 0 }, { F_FASTFIRE, 0 }, { F_HEADSHOT, 0 },
+    { F_AMMO, 0 }, { G_BLOCO_A, 0 }, { G_BLOCO_B, 0 }, { G_BLOCO_C, 0 },
+    { G_BLOCO_E, 1 }, { G_BLOCO_F, 0 }, { G_BLOCO_G, 0 }, { G_BLOCO_H, 1 }
 };
 
-static std::deque<std::string> g_trace;
+int32_t  g_alvo_id = 0;
+int32_t  g_alvo_estado = 0;
+uint64_t g_alvo_janela = 0;
 
-void log(const char* fmt, ...) {
-    char b[256];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(b, sizeof b, fmt, ap);
-    va_end(ap);
-
-    std::lock_guard<std::recursive_mutex> lk(S.m);
-    if (S.cfg[F_TRACE]) {
-        g_trace.emplace_back(b);
-        if (g_trace.size() > 400) g_trace.pop_front();
-    }
-    LOGI("%s", b);
+void core_init(void) {
+    memset(g_feat, 0, sizeof(g_feat));
+    for (size_t i = 0; i < sizeof(TABELA) / sizeof(TABELA[0]); i++)
+        g_feat[TABELA[i].id] = TABELA[i].valor;
 }
 
-static void apply_defaults() {
-    for (int i = 0; i < F_COUNT; i++) S.cfg[i] = FEATURES[i].def;
+int64_t core_get(int id) {
+    return (id >= 0 && id < ZDRX_FEAT_N) ? g_feat[id] : 0;
 }
 
-void boot(bool enable) {
-    std::lock_guard<std::recursive_mutex> lk(S.m);
-
-    if (enable) {
-        if (!S.live) {
-            apply_defaults();
-            S.live = true;
-            log("zdrx: motor ONLINE (%d features)", F_COUNT);
-        }
-        return;
-    }
-
-    if (S.live) {
-        S.live = false;
-        log("zdrx: motor offline");
-    }
-    wipe();
+void core_set(int id, int64_t v) {
+    if (id >= 0 && id < ZDRX_FEAT_N) g_feat[id] = v;
 }
 
-void wipe() {
-    std::lock_guard<std::recursive_mutex> lk(S.m);
-    S.ents.clear();
-    S.out.clear();
-    S.lockId = 0;
-    S.lockState = 0;
-    S.lockUntil = 0;
-    S.errX = S.errY = 0;
-    S.aimHits = 0;
-    S.seen = S.kept = S.mod = S.dropped = S.sent = 0;
-    S.self = Vec3{};
-    log("zdrx: estado limpo");
+int gate(int id) {
+    return core_get(id) != 0;
 }
-
-void set(int f, int v) {
-    std::lock_guard<std::recursive_mutex> lk(S.m);
-    if (f < 0 || f >= F_COUNT) return;
-
-    if (FEATURES[f].type == T_BOOL) {
-        v = v ? 1 : 0;
-    } else {
-        if (v < FEATURES[f].lo) v = FEATURES[f].lo;
-        if (v > FEATURES[f].hi) v = FEATURES[f].hi;
-    }
-
-    S.cfg[f] = v;
-
-    if (f == F_ESP || f == F_AIM) {
-        S.lockId = 0;
-        S.lockState = 0;
-        S.errX = S.errY = 0;
-    }
-    log("set %s = %d", FEATURES[f].key, v);
-}
-
-void set_json(const std::string& json) {
-    for (int i = 0; i < F_COUNT; i++) {
-        std::string k = std::string("\"") + FEATURES[i].key + "\"";
-        size_t p = json.find(k);
-        if (p == std::string::npos) continue;
-        p = json.find(':', p + k.size());
-        if (p == std::string::npos) continue;
-        set(i, atoi(json.c_str() + p + 1));
-    }
-}
-
-std::string cfg_json() {
-    std::lock_guard<std::recursive_mutex> lk(S.m);
-    std::ostringstream o;
-    o << '{';
-    for (int i = 0; i < F_COUNT; i++) {
-        if (i) o << ',';
-        o << '"' << FEATURES[i].key << "\":" << S.cfg[i];
-    }
-    o << '}';
-    return o.str();
-}
-
-std::string status_json() {
-    std::lock_guard<std::recursive_mutex> lk(S.m);
-    std::ostringstream o;
-    o << "{\"live\":"      << (S.live ? "true" : "false")
-      << ",\"ents\":"      << S.ents.size()
-      << ",\"queue\":"     << S.out.size()
-      << ",\"lock\":"      << S.lockId
-      << ",\"lockState\":" << S.lockState
-      << ",\"seen\":"      << S.seen
-      << ",\"kept\":"      << S.kept
-      << ",\"mod\":"       << S.mod
-      << ",\"dropped\":"   << S.dropped
-      << ",\"sent\":"      << S.sent
-      << ",\"aimHits\":"   << S.aimHits << '}';
-    return o.str();
-}
-
-std::string trace_drain() {
-    std::lock_guard<std::recursive_mutex> lk(S.m);
-    std::string out;
-    for (auto& l : g_trace) { out += l; out += '\n'; }
-    g_trace.clear();
-    return out;
-}
-
-void tick() {
-    std::lock_guard<std::recursive_mutex> lk(S.m);
-    int64_t now = now_ms();
-
-    if (S.lockUntil && now > S.lockUntil) {
-        S.lockState = 0;
-        S.lockId = 0;
-        S.lockUntil = 0;
-    }
-
-    for (auto it = S.ents.begin(); it != S.ents.end(); ) {
-        if (now - it->second.t1 >= 3000) it = S.ents.erase(it);
-        else ++it;
-    }
-}
-
-} // namespace zdrx
